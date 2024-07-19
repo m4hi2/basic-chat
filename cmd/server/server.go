@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -15,13 +16,14 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	msgFromMahir := []*message.Message{}
-	msgFromTahmid := []*message.Message{}
+	users := map[string]int{}
+	server := &sync.Map{}
 
 	// Sender
 	mux.HandleFunc("/send", func(w http.ResponseWriter, r *http.Request) {
-		sndrAddr := r.RemoteAddr
-		message := &message.Message{}
+		sndrAddr := r.RemoteAddr + " " + r.Header.Get("user-id")
+		sndr := r.Header.Get("user-id")
+		messageDTO := &message.Message{}
 
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -30,19 +32,32 @@ func main() {
 			return
 		}
 
-		err = json.Unmarshal(body, message)
+		if _, ok := users[sndr]; !ok {
+			users[sndr] = 1
+		}
+
+		err = json.Unmarshal(body, messageDTO)
 		if err != nil {
 			log.Printf("FROM: %s -> Err Unmarshal: %v \n", sndrAddr, err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		message.TimeStamp = time.Now().Format(DefaultTimeFormat)
+		messageDTO.TimeStamp = time.Now().Format(DefaultTimeFormat)
 
-		if message.From == "tahmid" {
-			msgFromTahmid = append(msgFromTahmid, message)
-		} else if message.From == "mahir" {
-			msgFromMahir = append(msgFromMahir, message)
+		for sender := range users {
+			if sender != sndr {
+				value, loaded := server.Load(sender)
+				if !loaded || value == nil {
+					server.Store(sender, []*message.Message{messageDTO})
+				} else {
+					msgs := value.([]*message.Message)
+					msgs = append(msgs, messageDTO)
+					server.Store(sender, msgs)
+				}
+
+			}
+
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -53,54 +68,42 @@ func main() {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		log.Printf("FROM: %s -> MSG: %v \n", sndrAddr, message)
+		log.Printf("FROM: %s -> MSG: %v \n", sndrAddr, messageDTO)
 
 		return
 	})
 
 	// Receiver
 	mux.HandleFunc("/receive/", func(w http.ResponseWriter, r *http.Request) {
-		rcvrAddr := r.RemoteAddr
+		rcvrAddr := r.RemoteAddr + " " + r.Header.Get("user-id")
 
 		rcvr := r.Header.Get("user-id")
-		if rcvr == "mahir" {
-			marshal, err := json.Marshal(msgFromTahmid)
-			if err != nil {
-				log.Printf("FROM: %s -> Err Marshaling: %v \n", rcvrAddr, err)
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, err = w.Write(marshal)
-			if err != nil {
-				log.Printf("FROM: %s -> Err Writing to response writer: %v \n", rcvrAddr, err)
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
 
-			w.WriteHeader(http.StatusOK)
-			msgFromTahmid = nil
-		} else if rcvr == "tahmid" {
-			marshal, err := json.Marshal(msgFromMahir)
-			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				log.Printf("FROM: %s -> Err Marshaling: %v \n", rcvrAddr, err)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, err = w.Write(marshal)
-			if err != nil {
-				log.Printf("FROM: %s -> Err Writing to response writer: %v \n", rcvrAddr, err)
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-
-			w.WriteHeader(http.StatusOK)
-			msgFromMahir = nil
+		if _, ok := users[rcvr]; !ok {
+			users[rcvr] = 1
 		}
 
+		messages, _ := server.Load(rcvr)
+		marshal, err := json.Marshal(messages)
+		if err != nil {
+			log.Printf("FROM: %s -> Err Marshaling: %v \n", rcvrAddr, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, err = w.Write(marshal)
+		if err != nil {
+			log.Printf("FROM: %s -> Err Writing to response writer: %v \n", rcvrAddr, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		server.Store(rcvr, nil)
+
+		w.WriteHeader(http.StatusOK)
 		log.Printf("FROM: %s -> Sent Messages\n", rcvrAddr)
 
+		return
 	})
 
 	http.ListenAndServe(":8080", mux)
