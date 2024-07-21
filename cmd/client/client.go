@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"github.com/m4hi2/chatting/pkg/encryption"
 	"github.com/m4hi2/chatting/pkg/message"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -64,12 +66,12 @@ func main() {
 
 func CollectMessages(user string, host string, port string) []*message.Message {
 	messages := []*message.Message{}
-	url := fmt.Sprintf("http://%s:%s/receive", host, port)
+	url := fmt.Sprintf("https://%s:%s/receive", host, port)
 
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("user-id", user)
-	client := &http.Client{}
+	client := makeHttpClient()
 	response, err := client.Do(req)
 	if err != nil {
 		log.Printf("Error: %v", err)
@@ -96,7 +98,7 @@ func CollectMessages(user string, host string, port string) []*message.Message {
 }
 
 func SendMessage(user string, host string, port string, message *message.Message) error {
-	url := fmt.Sprintf("http://%s:%s/send", host, port)
+	url := fmt.Sprintf("https://%s:%s/send", host, port)
 	data, err := encryption.EncryptData(message.Message)
 	if err != nil {
 		return err
@@ -114,7 +116,9 @@ func SendMessage(user string, host string, port string, message *message.Message
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("user-id", user)
-	client := &http.Client{}
+
+	client := makeHttpClient()
+
 	response, err := client.Do(req)
 	if err != nil {
 		return err
@@ -128,4 +132,28 @@ func SendMessage(user string, host string, port string, message *message.Message
 	}
 
 	return nil
+}
+
+func makeHttpClient() *http.Client {
+
+	dailer := net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           dailer.DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+	}
+
+	client := &http.Client{Transport: transport}
+	return client
 }
