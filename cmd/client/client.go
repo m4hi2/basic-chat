@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/m4hi2/chatting/pkg/encryption"
 	"github.com/m4hi2/chatting/pkg/message"
 	"io"
 	"log"
@@ -23,7 +24,11 @@ func main() {
 			time.Sleep(1 * time.Second)
 			messages := CollectMessages(user, serverIP, serverPort)
 			for _, msg := range messages {
-				log.Printf("%s 🗣 ️%s", msg.From, msg.Message)
+				decrypted, err := encryption.DecryptData(msg.Message)
+				if err != nil {
+					log.Printf("Error Decrypting Message: %s:", err)
+				}
+				log.Printf("%s 🗣 ️%s", msg.From, decrypted)
 			}
 		}
 	}()
@@ -71,6 +76,10 @@ func CollectMessages(user string, host string, port string) []*message.Message {
 		return nil
 	}
 
+	if response.StatusCode == http.StatusForbidden {
+		log.Fatal("You have been banned from the server.")
+	}
+
 	responseBody, err := io.ReadAll(response.Body)
 	if err != nil {
 		log.Printf("Error: %v", err)
@@ -88,6 +97,11 @@ func CollectMessages(user string, host string, port string) []*message.Message {
 
 func SendMessage(user string, host string, port string, message *message.Message) error {
 	url := fmt.Sprintf("http://%s:%s/send", host, port)
+	data, err := encryption.EncryptData(message.Message)
+	if err != nil {
+		return err
+	}
+	message.Message = data
 	body, err := json.Marshal(message)
 	if err != nil {
 		return err
@@ -107,6 +121,9 @@ func SendMessage(user string, host string, port string, message *message.Message
 	}
 
 	if response.StatusCode != http.StatusOK {
+		if response.StatusCode == http.StatusForbidden {
+			return fmt.Errorf("you have been banned from the server")
+		}
 		return fmt.Errorf("error: %v", response.Status)
 	}
 
