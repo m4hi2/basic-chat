@@ -23,6 +23,8 @@ type UserData struct {
 	OnlineAt time.Time `json:"online_at"`
 }
 
+var usersLock = sync.Mutex{}
+
 func main() {
 	var port string
 	if len(os.Args) == 2 {
@@ -61,10 +63,12 @@ func main() {
 		}
 
 		if _, ok := users[sndr]; !ok {
-			users[sndr] = &UserData{
+			userData := &UserData{
 				IP:       sndrIP,
 				OnlineAt: time.Now(),
 			}
+
+			go updateUserInfo(users, sndr, userData)
 		}
 
 		err = json.Unmarshal(body, messageDTO)
@@ -76,20 +80,7 @@ func main() {
 
 		messageDTO.TimeStamp = time.Now().Format(DefaultTimeFormat)
 
-		for sender := range users {
-			if sender != sndr {
-				value, loaded := server.Load(sender)
-				if !loaded || value == nil {
-					server.Store(sender, []*message.Message{messageDTO})
-				} else {
-					msgs := value.([]*message.Message)
-					msgs = append(msgs, messageDTO)
-					server.Store(sender, msgs)
-				}
-
-			}
-
-		}
+		broadcast(users, sndr, server, messageDTO)
 
 		_, err = w.Write([]byte(`{"message": "OK"}`))
 		if err != nil {
@@ -116,10 +107,12 @@ func main() {
 
 		rcvr := r.Header.Get("user-id")
 
-		users[rcvr] = &UserData{
+		userData := &UserData{
 			IP:       rcvrIP,
 			OnlineAt: time.Now(),
 		}
+
+		go updateUserInfo(users, rcvr, userData)
 
 		messages, _ := server.Load(rcvr)
 		marshal, err := json.Marshal(messages)
@@ -232,6 +225,25 @@ func main() {
 
 	runTLSServer(mux, port)
 }
+
+func broadcast(users map[string]*UserData, sndr string, server *sync.Map, messageDTO *message.Message) {
+	usersLock.Lock()
+	defer usersLock.Unlock()
+	for sender := range users {
+		if sender != sndr {
+			value, loaded := server.Load(sender)
+			if !loaded || value == nil {
+				server.Store(sender, []*message.Message{messageDTO})
+			} else {
+				msgs := value.([]*message.Message)
+				msgs = append(msgs, messageDTO)
+				server.Store(sender, msgs)
+			}
+
+		}
+
+	}
+}
 func runTLSServer(handler http.Handler, port string) {
 	certPem := []byte(`-----BEGIN CERTIFICATE-----
 MIID+zCCAmOgAwIBAgIQTqE19CAs0FLXg2+krfg6GTANBgkqhkiG9w0BAQsFADBX
@@ -303,4 +315,10 @@ ryYWM0q9spwKAMZVbP1wznPo
 	}
 	log.Fatal(srv.ListenAndServeTLS("", ""))
 
+}
+
+func updateUserInfo(m map[string]*UserData, key string, userInfo *UserData) {
+	usersLock.Lock()
+	defer usersLock.Unlock()
+	m[key] = userInfo
 }
